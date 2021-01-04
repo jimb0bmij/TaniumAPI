@@ -1,0 +1,162 @@
+---
+
+- hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    tan_auth_user: "jimb0"
+    tan_auth_password: ""
+    tan_auth_token: ""
+    tan_auth_session: ""
+    tan_api_url: "https://example.com/api/v2"
+
+
+  tasks:
+
+    - name: Check that you can connect (GET) to a page and it returns a status 404
+      uri:
+        url: "{{ tan_api_url }}"
+        validate_certs: no
+        status_code: 404
+
+    - name: load sesssion var from file
+      include_vars:
+        file: session.json
+        name: imported_var
+      when: "'session.json' is file"
+      register: sessionexist
+
+    - name: make connection
+      block:
+       - name: does session file exist
+         fail:
+           msg: File does not exist need to login
+         when: "'session.json' is not file"
+
+       - name: tanium api vaildate session
+         uri:
+           url: "{{ tan_api_url }}/{{ resource_path }}"
+           method: POST
+           validate_certs: no
+           body_format: json
+           body: "{{ lookup('file','session.json') }}"
+           return_content: yes
+   
+         vars:
+           resource_path: /session/validate
+         register: sessionidvaildate
+   
+       - name: show session id vaildate
+         debug:
+           msg: "{{ sessionidvaildate }}"
+ 
+      rescue:
+       - name: tanium api login
+         uri:
+           url: "{{ tan_api_url }}/{{ resource_path }}"
+           method: POST
+           validate_certs: no
+           body_format: json
+           body: >
+             {
+               "username" : "{{ tan_auth_user }}",
+               "password" : "{{ tan_auth_password }}"
+              }
+           return_content: yes
+   
+         vars:
+           resource_path: /session/login
+         register: sessionid
+   
+       - name: create session key/values into file
+         set_fact:
+           imported_var: "{{ imported_var | default([]) | combine({ 'session': sessionid.json.data.session }) }}"
+   
+       - name: write session var to file
+         copy: 
+           content: "{{ imported_var | to_nice_json }}" 
+           dest: session.json
+
+       - name: show session information
+         debug:
+           msg: "{{ sessionid }}"
+   
+       - name: show session data
+         debug:
+           msg: "{{ sessionid.json.data }}"
+   
+       - name: show session id
+         debug:
+           msg: "{{ sessionid.json.data.session }}"
+
+    - name: set session auth var
+      set_fact:
+        tan_auth_session: "{{ lookup('file','session.json') }}"
+
+    - name: show session auth var
+      debug:
+        msg: 
+          - "{{ tan_auth_session }}"
+          - "{{ tan_auth_session.session }}"
+
+    - name: tanium api get tokens
+      uri:
+        url: "{{ tan_api_url }}/{{ resource_path }}"
+        method: GET
+        headers:
+          session: "{{ tan_auth_session.session }}"
+        validate_certs: no
+        return_content: yes
+
+      vars:
+        resource_path: api_tokens
+      register: tan_auth_tokens
+
+    - name: show token auth var
+      debug:
+        msg: 
+          - "{{ tan_auth_tokens }}"
+
+
+    - name: tanium api create token
+      uri:
+        url: "{{ tan_api_url }}/{{ resource_path }}"
+        method: POST
+        headers:
+          session: "{{ tan_auth_session.session }}"
+        validate_certs: no
+        body_format: json
+        body: >
+          { }
+        return_content: yes
+
+      vars:
+        resource_path: api_tokens
+      register: tan_auth_token
+
+    - name: show created token
+      debug:
+        msg: 
+          - "{{ tan_auth_token }}"
+          - "{{ tan_auth_token.json.data.token_string }}"
+
+
+  
+    - name: Debug Info for tokens
+      debug:
+        var: item.id
+      with_items: "{{ tan_auth_tokens.json.data }}"
+
+    - name: remove tokens
+      uri:
+        url: "{{ tan_api_url }}/{{ resource_path }}"
+        method: DELETE
+        headers:
+          session: "{{ tan_auth_session.session }}"
+        validate_certs: no
+        return_content: yes
+
+      vars:
+        resource_path: api_tokens/{{item.id}}
+      with_items: "{{ tan_auth_tokens.json.data }}"
